@@ -32,6 +32,10 @@ const STRUCTURED_SUMMARY_TEMPLATE =
 const MAX_TOOL_FAILURES = 8;
 const MAX_TOOL_FAILURE_CHARS = 240;
 
+function prependInstructions(prefix: string, suffix?: string): string {
+  return suffix ? `${prefix}\n\n${suffix}` : prefix;
+}
+
 type ToolFailure = {
   toolCallId: string;
   toolName: string;
@@ -214,11 +218,12 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
 
       // Inject structured summary template when enabled via config
       if (runtime?.structuredSummary) {
-        customInstructions = customInstructions
-          ? `${STRUCTURED_SUMMARY_TEMPLATE}\n\n${customInstructions}`
-          : STRUCTURED_SUMMARY_TEMPLATE;
+        customInstructions = prependInstructions(STRUCTURED_SUMMARY_TEMPLATE, customInstructions);
       }
       const turnPrefixMessages = preparation.turnPrefixMessages ?? [];
+      const turnPrefixInstructions = runtime?.structuredSummary
+        ? prependInstructions(STRUCTURED_SUMMARY_TEMPLATE, TURN_PREFIX_INSTRUCTIONS)
+        : TURN_PREFIX_INSTRUCTIONS;
       let messagesToSummarize = preparation.messagesToSummarize;
 
       const maxHistoryShare = runtime?.maxHistoryShare ?? 0.5;
@@ -320,7 +325,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           reserveTokens,
           maxChunkTokens,
           contextWindow: contextWindowTokens,
-          customInstructions: TURN_PREFIX_INSTRUCTIONS,
+          customInstructions: turnPrefixInstructions,
           previousSummary: undefined,
         });
         summary = `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixSummary}`;

@@ -1,10 +1,20 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { summarizeInStages } from "../compaction.js";
 import {
   getCompactionSafeguardRuntime,
   setCompactionSafeguardRuntime,
 } from "./compaction-safeguard-runtime.js";
-import { __testing } from "./compaction-safeguard.js";
+import compactionSafeguardExtension, { __testing } from "./compaction-safeguard.js";
+
+vi.mock("../compaction.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../compaction.js")>();
+  return {
+    ...actual,
+    summarizeInStages: vi.fn(),
+  };
+});
 
 const {
   collectToolFailures,
@@ -14,7 +24,94 @@ const {
   BASE_CHUNK_RATIO,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
+  STRUCTURED_SUMMARY_TEMPLATE,
 } = __testing;
+
+const mockedSummarizeInStages = vi.mocked(summarizeInStages);
+
+function makeUserMessage(content: string): AgentMessage {
+  return {
+    role: "user",
+    content,
+    timestamp: Date.now(),
+  };
+}
+
+function registerSessionBeforeCompactHandler() {
+  let handler:
+    | ((
+        event: unknown,
+        ctx: ExtensionContext,
+      ) => Promise<{ compaction: { summary: string; firstKeptEntryId: string } }>)
+    | undefined;
+
+  const api = {
+    on: (name: string, fn: unknown) => {
+      if (name === "session_before_compact") {
+        handler = fn as typeof handler;
+      }
+    },
+    appendEntry: (_type: string, _data?: unknown) => {},
+  } as unknown as ExtensionAPI;
+
+  compactionSafeguardExtension(api);
+  if (!handler) {
+    throw new Error("missing session_before_compact handler");
+  }
+  return handler;
+}
+
+function getSummarizeCall(index: number): Parameters<typeof summarizeInStages>[0] {
+  const call = mockedSummarizeInStages.mock.calls[index];
+  if (!call) {
+    throw new Error(`missing summarizeInStages call at index ${index}`);
+  }
+  return call[0];
+}
+
+async function runSessionBeforeCompact(params: {
+  structuredSummary: boolean;
+  customInstructions?: string;
+  isSplitTurn?: boolean;
+}): Promise<void> {
+  const sessionManager = {};
+  setCompactionSafeguardRuntime(sessionManager, {
+    structuredSummary: params.structuredSummary,
+    contextWindowTokens: 200_000,
+  });
+
+  const handler = registerSessionBeforeCompactHandler();
+  const event = {
+    preparation: {
+      fileOps: {
+        read: new Set<string>(),
+        edited: new Set<string>(),
+        written: new Set<string>(),
+      },
+      messagesToSummarize: [makeUserMessage("history")],
+      turnPrefixMessages: params.isSplitTurn ? [makeUserMessage("prefix")] : [],
+      firstKeptEntryId: "entry-1",
+      settings: { reserveTokens: 2048 },
+      previousSummary: undefined,
+      isSplitTurn: Boolean(params.isSplitTurn),
+    },
+    customInstructions: params.customInstructions,
+    signal: new AbortController().signal,
+  };
+
+  await handler(event, {
+    model: { contextWindow: 200_000 },
+    modelRegistry: {
+      getApiKey: vi.fn().mockResolvedValue("test-api-key"),
+    },
+    sessionManager,
+  } as unknown as ExtensionContext);
+}
+
+beforeEach(() => {
+  mockedSummarizeInStages.mockReset();
+  mockedSummarizeInStages.mockResolvedValue("history summary");
+});
 
 describe("compaction-safeguard tool failures", () => {
   it("formats tool failures with meta and summary", () => {
@@ -257,8 +354,6 @@ describe("compaction-safeguard runtime registry", () => {
 });
 
 describe("structured summary template", () => {
-  const { STRUCTURED_SUMMARY_TEMPLATE } = __testing;
-
   it("contains all required sections", () => {
     const requiredSections = [
       "## Goal",
@@ -280,5 +375,65 @@ describe("structured summary template", () => {
 
   it("requires all sections to be present", () => {
     expect(STRUCTURED_SUMMARY_TEMPLATE).toContain("Every section MUST be present");
+  });
+});
+
+describe("compaction-safeguard session_before_compact instructions", () => {
+  const PREFIX_TURN_TEXT = "This summary covers the prefix of a split turn.";
+
+  it("passes structured instructions to summarizeInStages when enabled", async () => {
+    await runSessionBeforeCompact({
+      structuredSummary: true,
+      customInstructions: "Preserve TODOs and open questions.",
+    });
+
+    expect(mockedSummarizeInStages).toHaveBeenCalledTimes(1);
+    const call = getSummarizeCall(0);
+    expect(call.customInstructions).toContain(STRUCTURED_SUMMARY_TEMPLATE);
+    expect(call.customInstructions).toContain("Preserve TODOs and open questions.");
+  });
+
+  it("does not inject structured instructions when disabled", async () => {
+    await runSessionBeforeCompact({
+      structuredSummary: false,
+      customInstructions: "Preserve TODOs and open questions.",
+    });
+
+    expect(mockedSummarizeInStages).toHaveBeenCalledTimes(1);
+    const call = getSummarizeCall(0);
+    expect(call.customInstructions).toBe("Preserve TODOs and open questions.");
+    expect(call.customInstructions ?? "").not.toContain("## Goal");
+  });
+
+  it("prepends structured template to split-turn prefix instructions when enabled", async () => {
+    mockedSummarizeInStages
+      .mockResolvedValueOnce("history summary")
+      .mockResolvedValueOnce("prefix summary");
+
+    await runSessionBeforeCompact({
+      structuredSummary: true,
+      isSplitTurn: true,
+    });
+
+    expect(mockedSummarizeInStages).toHaveBeenCalledTimes(2);
+    const prefixCall = getSummarizeCall(1);
+    expect(prefixCall.customInstructions?.startsWith(STRUCTURED_SUMMARY_TEMPLATE)).toBe(true);
+    expect(prefixCall.customInstructions).toContain(PREFIX_TURN_TEXT);
+  });
+
+  it("keeps split-turn prefix instructions unstructured when disabled", async () => {
+    mockedSummarizeInStages
+      .mockResolvedValueOnce("history summary")
+      .mockResolvedValueOnce("prefix summary");
+
+    await runSessionBeforeCompact({
+      structuredSummary: false,
+      isSplitTurn: true,
+    });
+
+    expect(mockedSummarizeInStages).toHaveBeenCalledTimes(2);
+    const prefixCall = getSummarizeCall(1);
+    expect(prefixCall.customInstructions).toContain(PREFIX_TURN_TEXT);
+    expect(prefixCall.customInstructions ?? "").not.toContain("## Goal");
   });
 });
