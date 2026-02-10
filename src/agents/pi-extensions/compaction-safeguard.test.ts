@@ -248,4 +248,37 @@ describe("compaction-safeguard runtime registry", () => {
     expect(getCompactionSafeguardRuntime(sm1)).toEqual({ maxHistoryShare: 0.3 });
     expect(getCompactionSafeguardRuntime(sm2)).toEqual({ maxHistoryShare: 0.8 });
   });
+
+  it("stores structuredSummary flag", () => {
+    const sm = {};
+    setCompactionSafeguardRuntime(sm, { structuredSummary: true });
+    expect(getCompactionSafeguardRuntime(sm)?.structuredSummary).toBe(true);
+  });
+});
+
+describe("structured summary template", () => {
+  const { STRUCTURED_SUMMARY_TEMPLATE } = __testing;
+
+  it("contains all required sections", () => {
+    const requiredSections = [
+      "## Goal",
+      "## Progress",
+      "## Key Data",
+      "## Decisions",
+      "## Modified Files",
+      "## Next Steps",
+      "## Constraints",
+    ];
+    for (const section of requiredSections) {
+      expect(STRUCTURED_SUMMARY_TEMPLATE).toContain(section);
+    }
+  });
+
+  it("instructs verbatim preservation of key data", () => {
+    expect(STRUCTURED_SUMMARY_TEMPLATE).toContain("VERBATIM");
+  });
+
+  it("requires all sections to be present", () => {
+    expect(STRUCTURED_SUMMARY_TEMPLATE).toContain("Every section MUST be present");
+  });
 });

@@ -17,6 +17,18 @@ const FALLBACK_SUMMARY =
 const TURN_PREFIX_INSTRUCTIONS =
   "This summary covers the prefix of a split turn. Focus on the original request," +
   " early progress, and any details needed to understand the retained suffix.";
+
+const STRUCTURED_SUMMARY_TEMPLATE =
+  "Structure your summary using these mandatory sections. Every section MUST be present;" +
+  " write 'None.' if a section has no content. Do NOT omit any section.\n\n" +
+  "## Goal\nWhat the user is trying to accomplish in this session.\n\n" +
+  "## Progress\nWhat has been done so far, current status.\n\n" +
+  "## Key Data\nALL URLs, IDs, tokens, credentials, file paths, config values mentioned." +
+  " Preserve these VERBATIM — do not paraphrase or omit any.\n\n" +
+  "## Decisions\nKey decisions made and their reasoning.\n\n" +
+  "## Modified Files\nFiles created, edited, or deleted with a brief description of changes.\n\n" +
+  "## Next Steps\nWhat needs to happen next, pending tasks, open questions.\n\n" +
+  "## Constraints\nAny rules, limits, or constraints established during the session.";
 const MAX_TOOL_FAILURES = 8;
 const MAX_TOOL_FAILURE_CHARS = 240;
 
@@ -160,7 +172,8 @@ function formatFileOperations(readFiles: string[], modifiedFiles: string[]): str
 
 export default function compactionSafeguardExtension(api: ExtensionAPI): void {
   api.on("session_before_compact", async (event, ctx) => {
-    const { preparation, customInstructions, signal } = event;
+    const { preparation, signal } = event;
+    let { customInstructions } = event;
     const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
     const fileOpsSummary = formatFileOperations(readFiles, modifiedFiles);
     const toolFailures = collectToolFailures([
@@ -198,6 +211,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
       const modelContextWindow = resolveContextWindowTokens(model);
       const contextWindowTokens = runtime?.contextWindowTokens ?? modelContextWindow;
+
+      // Inject structured summary template when enabled via config
+      if (runtime?.structuredSummary) {
+        customInstructions = customInstructions
+          ? `${STRUCTURED_SUMMARY_TEMPLATE}\n\n${customInstructions}`
+          : STRUCTURED_SUMMARY_TEMPLATE;
+      }
       const turnPrefixMessages = preparation.turnPrefixMessages ?? [];
       let messagesToSummarize = preparation.messagesToSummarize;
 
@@ -343,4 +363,5 @@ export const __testing = {
   BASE_CHUNK_RATIO,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
+  STRUCTURED_SUMMARY_TEMPLATE,
 } as const;
