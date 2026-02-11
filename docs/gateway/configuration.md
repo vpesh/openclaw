@@ -1949,6 +1949,14 @@ auto-compaction, instructing the model to store durable memories on disk (e.g.
 `memory/YYYY-MM-DD.md`). It triggers when the session token estimate crosses a
 soft threshold below the compaction limit.
 
+`agents.defaults.compaction.structuredSummary` forces `safeguard` mode summaries
+to use a fixed section template. Default: `false`.
+
+Warning: when enabled, the template instructs the model to retain URLs, IDs,
+tokens, credentials, and config values verbatim in the persisted compaction
+summary. Enable only for trusted environments and avoid sharing live secrets
+in chat history.
+
 Legacy defaults:
 
 - `memoryFlush.enabled`: `true`
@@ -1966,6 +1974,7 @@ Example (tuned):
       compaction: {
         mode: "safeguard",
         reserveTokensFloor: 24000,
+        structuredSummary: true,
         memoryFlush: {
           enabled: true,
           softThresholdTokens: 6000,
